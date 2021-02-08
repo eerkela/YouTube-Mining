@@ -1,5 +1,4 @@
 .git/*
-Lists/*
 Logs/*
 Source/.env
 Source/__pycache__/*
