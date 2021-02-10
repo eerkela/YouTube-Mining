@@ -131,15 +131,6 @@ class Video:
             'favorites' : f
         }
 
-        # parse topicDetails
-        try:
-            self.topics = api_response['topicDetails']
-        except KeyError:
-            self.topics = None
-
-        # parse liveStreamingDetails
-        self.is_livestream = 'liveStreamingDetails' in api_response.keys()
-
         # get target directory
         root_dir = Path(__file__).resolve().parents[1]
         local_title = '[%s] %s' % (str(self.created_at.date()), self.title)
@@ -196,7 +187,6 @@ class Video:
             'description' : self.description,
             'category_id' : self.category_id,
             'tags' : self.tags,
-            'topics' : self.topics,
             'thumbnail' : self.thumbnail,
             'duration' : str(self.duration),
             'stats' : self.stats
@@ -217,9 +207,6 @@ class Video:
         video_path = Path(self.target_dir, '[video] %s.mp4' % self.id)
         audio_path = Path(self.target_dir, '[audio] %s.mp4' % self.id)
         return validate(video_path) and validate(audio_path)
-
-    def is_livestream(self):
-        return self.is_livestream
 
     def save_info(self):
         self.target_dir.mkdir(parents=True, exist_ok=True)
@@ -265,7 +252,7 @@ class Channel:
                                 cache_discovery=False)
 
         channel_request = Channel.client.channels().list(
-            part = 'snippet,contentDetails,statistics,topicDetails',
+            part = 'snippet,contentDetails',
             id = id
         ).execute()
 
@@ -279,50 +266,17 @@ class Channel:
         contentDetails = channel_request['items'][0]['contentDetails']
         self.upload_playlist = contentDetails['relatedPlaylists']['uploads']
 
-        # parse statistics
-        def format_statistics(stats_dict):
-            try:
-                views = int(stats_dict['viewCount'])
-            except KeyError:
-                views = None
-            try:
-                subscribers = int(stats_dict['subscriberCount'])
-            except KeyError:
-                subscribers = None
-            try:
-                hidden_subs = int(stats_dict['hiddenSubscriberCount'])
-            except KeyError:
-                hidden_subs = None
-            try:
-                video_count = int(stats_dict['videoCount'])
-            except KeyError:
-                video_count = None
-            return (views, subscribers, hidden_subs, video_count)
-        (v, s, hs, vc) = format_statistics(channel_request['items'][0] \
-                                           ['statistics'])
-        self.stats = {
-            'views' : v,
-            'subscribers' : s,
-            'hidden_subs' : hs,
-            'video_count' : vc
-        }
-
-        # parse topicDetails
-        try:
-            self.topics = channel_request['items'][0]['topicDetails']
-        except KeyError:
-            self.topics = None
-
         # get contents
         self.videos = None
         self.complete = False
 
-    def uploads(self, depth=None):
+    def uploads(self, range=None):
         # handle caching
         if self.videos:
-            if depth:
-                if depth <= len(self.videos):
-                    return self.videos[:depth]
+            if range and range[1] <= len(self.videos):
+                lower_lim = range[0]
+                upper_lim = range[1]
+                return self.videos[lower_lim:upper_lim]
             elif self.complete:
                 return self.videos
 
@@ -341,12 +295,13 @@ class Channel:
                                playlist_request['items']))
             video_request = Channel.client.videos().list(
                 id = ids,
-                part = 'snippet,statistics,contentDetails,topicDetails,\
-                        liveStreamingDetails'
+                part = 'snippet,statistics,contentDetails'
             ).execute()
             responses.extend(video_request['items'])
-            if depth and len(responses) > depth:
-                responses = responses[:depth]
+            if range and len(responses) < range[1]:
+                lower_lim = range[0]
+                upper_lim = range[1]
+                responses = responses[lower_lim:upper_lim]
                 break
 
             next_page_token = playlist_request.get('nextPageToken')
@@ -355,7 +310,7 @@ class Channel:
 
         # assign cache
         self.videos = [Video(r, self.category) for r in responses]
-        if not depth:
+        if not range:
             self.complete = True
         return self.videos
 
@@ -363,19 +318,19 @@ class Channel:
         info = {
             'name' : self.name,
             'description' : self.description,
-            'created_at' : self.created_at,
-            'stats' : self.stats,
-            'topics' : self.topics
+            'created_at' : self.created_at
         }
         return info
 
-    def undownloaded(self, depth=None):
+    def undownloaded(self, range=None):
         if self.videos:
-            if depth and depth <= len(self.videos):
-                return [v for v in self.videos[:depth]
+            if range and range[1] <= len(self.videos):
+                lower_lim = range[0]
+                upper_lim = range[1]
+                return [v for v in self.videos[lower_lim:upper_lim]
                                 if not v.is_downloaded()]
             elif self.complete:
                 return [v for v in self.videos if not v.is_downloaded()]
 
-        videos = self.uploads(depth)
+        videos = self.uploads(range=range)
         return [v for v in videos if not v.is_downloaded()]
