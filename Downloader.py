@@ -25,9 +25,9 @@ if __name__ == '__main__':
     ## Sources gathered from the Alternative Influence Report (in parent
     ## folder) + transparency.tube + personal curation.
 
-    def download_channel(id, category, convert=False, range=None):
+    def download_channel(id, category, convert=False, depth=None):
         c = Channel(id, category=category)
-        for v in c.uploads(range=range):
+        for v in c.uploads(depth=depth):
             try:
                 v.download(convert=convert)
             except:
@@ -39,6 +39,6 @@ if __name__ == '__main__':
 
     with ProcessPoolExecutor(max_workers=None) as exec:
         for id in politics.values():
-            exec.submit(download_channel, id, 'Politics', False, (0, 64))
+            exec.submit(download_channel, id, 'Politics', False, None)
         for id in politics.values():
-            exec.submit(download_channel, id, 'Politics', True, (0, 64))
+            exec.submit(download_channel, id, 'Politics', True, None)

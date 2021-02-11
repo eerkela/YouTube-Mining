@@ -270,13 +270,11 @@ class Channel:
         self.videos = None
         self.complete = False
 
-    def uploads(self, range=None):
+    def uploads(self, depth=None):
         # handle caching
         if self.videos:
-            if range and range[1] <= len(self.videos):
-                lower_lim = range[0]
-                upper_lim = range[1]
-                return self.videos[lower_lim:upper_lim]
+            if depth and len(self.videos) >= depth:
+                return self.videos[:depth]
             elif self.complete:
                 return self.videos
 
@@ -298,10 +296,8 @@ class Channel:
                 part = 'snippet,statistics,contentDetails'
             ).execute()
             responses.extend(video_request['items'])
-            if range and len(responses) < range[1]:
-                lower_lim = range[0]
-                upper_lim = range[1]
-                responses = responses[lower_lim:upper_lim]
+            if depth and len(responses) >= depth:
+                responses = responses[:depth]
                 break
 
             next_page_token = playlist_request.get('nextPageToken')
@@ -310,7 +306,7 @@ class Channel:
 
         # assign cache
         self.videos = [Video(r, self.category) for r in responses]
-        if not range:
+        if not depth:
             self.complete = True
         return self.videos
 
@@ -322,15 +318,13 @@ class Channel:
         }
         return info
 
-    def undownloaded(self, range=None):
+    def undownloaded(self, depth=None):
         if self.videos:
-            if range and range[1] <= len(self.videos):
-                lower_lim = range[0]
-                upper_lim = range[1]
-                return [v for v in self.videos[lower_lim:upper_lim]
+            if depth and len(self.videos) >= depth:
+                return [v for v in self.videos[:depth]
                                 if not v.is_downloaded()]
             elif self.complete:
                 return [v for v in self.videos if not v.is_downloaded()]
 
-        videos = self.uploads(range=range)
+        videos = self.uploads(depth=depth)
         return [v for v in videos if not v.is_downloaded()]
