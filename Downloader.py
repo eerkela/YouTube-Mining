@@ -18,6 +18,10 @@ def setup_logging():
         datefmt='%H:%M:%S'
     )
 
+def split_list(to_split, n=1):
+    length = len(to_split)
+    return [to_split[i*length//n : (i+1)*length//n] for i in range(n)]
+
 
 if __name__ == '__main__':
     setup_logging()
@@ -37,8 +41,9 @@ if __name__ == '__main__':
     with politics_path.open(mode='r') as in_file:
         politics = json.load(in_file)
 
+    blocks = split_list(list(politics.values()), 5)
     with ProcessPoolExecutor(max_workers=None) as exec:
-        for id in politics.values():
+        for id in blocks[0]:
             exec.submit(download_channel, id, 'Politics', False, None)
-        for id in politics.values():
+        for id in blocks[0]:
             exec.submit(download_channel, id, 'Politics', True, None)
