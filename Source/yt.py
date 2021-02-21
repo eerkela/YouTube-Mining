@@ -4,9 +4,9 @@ import isodate
 import json
 import os
 import subprocess
-import traceback
 from pathlib import Path
 
+import ffmpeg
 from dotenv import load_dotenv, find_dotenv
 from googleapiclient.discovery import build
 from pytube import YouTube, Playlist
