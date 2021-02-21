@@ -1,7 +1,8 @@
 import datetime
 import json
 import logging
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import traceback
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from Source.yt import Channel
@@ -26,24 +27,25 @@ def split_list(to_split, n=1):
 if __name__ == '__main__':
     setup_logging()
 
-    ## Sources gathered from the Alternative Influence Report (in parent
-    ## folder) + transparency.tube + personal curation.
-
     def download_channel(id, category, convert=False, depth=None):
-        c = Channel(id, category=category)
-        for v in c.uploads(depth=depth):
-            try:
-                v.download(convert=convert)
-            except:
-                logging.error(traceback.format_exc())
+        try:
+            c = Channel(id, category=category)
+            for v in c.uploads(depth=depth):
+                try:
+                    v.download(convert=convert)
+                except:
+                    logging.error(traceback.format_exc())
+        except:
+            logging.error(traceback.format_exc())
 
     politics_path = Path('Lists', 'politics.json')
     with politics_path.open(mode='r') as in_file:
         politics = json.load(in_file)
 
     blocks = split_list(list(politics.values()), 5)
+    block = blocks[4]
     with ProcessPoolExecutor(max_workers=None) as exec:
-        for id in blocks[0]:
+        for id in politics.values():
             exec.submit(download_channel, id, 'Politics', False, None)
-        for id in blocks[0]:
-            exec.submit(download_channel, id, 'Politics', True, None)
+        #for id in politics.values():
+        #    exec.submit(download_channel, id, 'Politics', True, None)
