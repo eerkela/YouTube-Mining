@@ -83,18 +83,11 @@ class Video:
             self.tags = snippet['tags']
         except KeyError:
             self.tags = None
-
-        def format_thumbnail(thumbnail_dict):
-            if 'maxres' in thumbnail_dict.keys():
-                return thumbnail_dict['maxres']['url']
-            if 'standard' in thumbnail_dict.keys():
-                return thumbnail_dict['standard']['url']
-            elif 'high' in thumbnail_dict.keys():
-                return thumbnail_dict['high']['url']
-            elif 'medium' in thumbnail_dict.keys():
-                return thumbnail_dict['medium']['url']
-            return thumbnail_dict['default']['url']
-        self.thumbnail = format_thumbnail(snippet['thumbnails'])
+        priority = ['maxres', 'standard', 'high', 'medium', 'default']
+        for resolution in priority:
+            if resolution in snippet['thumbnails']:
+                self.thumbnail = snippet['thumbnails'][resolution]['url']
+                break
 
         #parse contentDetails
         contentDetails = api_response['contentDetails']
@@ -105,30 +98,19 @@ class Video:
             self.captions_available = False
 
         # parse stats
-        def format_statistics(stats_dict):
+        statistics = api_response['statistics']
+        keys = ['viewCount', 'likeCount', 'dislikeCount', 'favoriteCount']
+        vals = []
+        for k in keys:
             try:
-                views = int(stats_dict['viewCount'])
+                vals.append(int(statistics[k]))
             except KeyError:
-                views = None
-            try:
-                likes = int(stats_dict['likeCount'])
-            except KeyError:
-                likes = None
-            try:
-                dislikes = int(stats_dict['dislikeCount'])
-            except KeyError:
-                dislikes = None
-            try:
-                favorites = int(stats_dict['favoriteCount'])
-            except KeyError:
-                favorites = None
-            return (views, likes, dislikes, favorites)
-        (v, l, d, f) = format_statistics(api_response['statistics'])
+                vals.append(None)
         self.stats = {
-            'views' : v,
-            'likes' : l,
-            'dislikes' : d,
-            'favorites' : f
+            'views' : vals[0],
+            'likes' : vals[1],
+            'dislikes' : vals[2],
+            'favorites' : vals[3]
         }
 
         # get target directory
