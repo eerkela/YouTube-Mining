@@ -20,6 +20,7 @@ def setup_logging():
     )
 
 def split_list(to_split, n=1):
+    '''Splits list into n sublists of equal length'''
     length = len(to_split)
     return [to_split[i*length//n : (i+1)*length//n] for i in range(n)]
 
@@ -44,8 +45,11 @@ if __name__ == '__main__':
 
     blocks = split_list(list(politics.values()), 5)
     block = blocks[4]
+    test_id = list(politics.values())[0]
     with ProcessPoolExecutor(max_workers=None) as exec:
         for id in politics.values():
+            exec.submit(download_channel, id, 'Politics', False, 50)
+        for id in politics.values():
             exec.submit(download_channel, id, 'Politics', False, None)
-        #for id in politics.values():
-        #    exec.submit(download_channel, id, 'Politics', True, None)
+        for id in politics.values():
+            exec.submit(download_channel, id, 'Politics', True, None)
