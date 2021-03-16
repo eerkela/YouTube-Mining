@@ -8,29 +8,34 @@ import numpy as np
 import cv2
 import pytesseract
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SOURCE_DIR = Path(__file__).resolve().parents[0]
 
+
 class BoundingBox:
 
-    def __init__(self, startX: int, startY: int, endX: int, endY: int,
-                 confidence: float):
+    def __init__(self, startX: int, startY: int, endX: int, endY: int):
         self.startX = startX
         self.startY = startY
         self.endX = endX
-        self.enY = endY
-        self.confidence = confidence
-
-    def size(self):
-        height = endY - startY
-        width = endX - startX
-        return height * width
+        self.endY = endY
 
     def center(self):
-        x = (startX + endX) / 2
-        y = (startY + endY) / 2
+        x = (self.startX + self.endX) / 2
+        y = (self.startY + self.endY) / 2
         return (x, y)
+
+    def draw(self, image):
+        cv2.rectangle(image,
+                      (self.startX, self.startY),
+                      (self.endX, self.endY),
+                      (0, 255, 0),
+                      2)
+
+    def size(self):
+        height = self.endY - self.startY
+        width = self.endX - self.startX
+        return height * width
 
 
 class Frame:
@@ -67,7 +72,7 @@ class Frame:
 
         # load the pre-trained EAST text detector
         if not Frame.east_net:
-            print("[INFO] loading EAST text detector...")
+            print("[INFO] loading EAST text detector...", end='\r')
             net_path = Path(SOURCE_DIR, 'frozen_east_text_detection.pb')
             Frame.east_net = cv2.dnn.readNet(str(net_path))
 
@@ -143,13 +148,13 @@ class Frame:
             startY = int(startY * rH)
             endX = int(endX * rW)
             endY = int(endY * rH)
-            results.append((startX, startY, endX, endY))
-
-            if save_boxes:
-                cv2.rectangle(self.image, (startX, startY), (endX, endY), (0, 255, 0), 2)
+            bb = BoundingBox(startX, startY, endX, endY)
+            results.append(bb)
 
         if save_boxes:
-            cv2.imwrite('result.png', self.image)
+            for bb in results:
+                bb.draw(self.image)
+            self.save(replace=True)
 
         return (results, confidences)
 
@@ -166,10 +171,10 @@ class Frame:
                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         return pytesseract.image_to_string(i, lang='eng')
 
-    def save(self):
+    def save(self, replace: bool = False):
         dest_path = Path(ROOT_DIR, 'Frames', self.video_name,
                          '%s.png' % str(self.timestamp))
-        if not dest_path.exists():
+        if replace or not dest_path.exists():
             dest_path.parents[0].mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(dest_path), self.image)
             return True
@@ -310,6 +315,6 @@ if __name__ == '__main__':
     g = FrameExtractor(video)
     start = time.time()
     for frame in g.frames(step=timedelta(seconds=10)):
-        pass
+        frame.find_text(save_boxes=True)
     end = time.time()
     print(end - start)
