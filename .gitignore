@@ -1,9 +1,9 @@
 .git/*
 Examples/*
+Frames/*
 Logs/*
 Source/.env
 Source/__pycache__/*
 Videos/*
 
-.env
 client_secret*
