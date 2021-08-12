@@ -1,27 +1,24 @@
 # built-ins
 import csv
-import itertools
 import json
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+from socket import gaierror
+from urllib.error import URLError
 
 # dependencies
 import ffmpeg
 import pytube
-from dotenv import load_dotenv, find_dotenv
 from tqdm import tqdm
 
 # internal
-# from DBUtils import format_filename, duration, stitch
+#from decorators import *
 
 
-load_dotenv(find_dotenv())
-API_KEY = os.getenv('YOUTUBE_API_KEY')
-API_SERVICE_NAME = 'youtube'
-API_VERSION = 'v3'
 ROOT_DIR = Path(__file__).resolve().parents[1]
 with Path(ROOT_DIR, "Lists", "channels.json").open() as f:
     CHANNELS = json.load(f)
@@ -35,7 +32,7 @@ def duration(input_file: Path):
     try:
         return float(result.stdout)
     except:
-        print("Error parsing duration for path: %s" % input_file)
+        print(f"Error parsing duration for path: {input_file}")
         raise
 
 def format_filename(string, remove = "[^-_(),' a-zA-Z0-9]", char_lim = 200):
@@ -44,7 +41,7 @@ def format_filename(string, remove = "[^-_(),' a-zA-Z0-9]", char_lim = 200):
     return name[:char_lim]
 
 def get_local_channels():
-    parent_dir = Path(ROOT_DIR, "Videos", "Politics")
+    parent_dir = Path(ROOT_DIR, "Videos")
     for channel in parent_dir.iterdir():
         info = [_ for _ in channel.glob("info.json")]
         if channel.is_dir() and len(info) > 0:
@@ -53,70 +50,105 @@ def get_local_channels():
 
 class Channel:
 
-    def __init__(self, id):
-        if not (isinstance(id, Path) or isinstance(id, str)):
-            raise Exception("id cannot be parsed: %s" % id)
+    def __init__(self, config, write_info=False):
+        self.fetched_at = config["fetched_at"]
+        self.name = config["name"]
+        self.formatted_name = config["formatted_name"]
+        self.id = config["id"]
+        self.about_html = config["about_html"]
+        self.community_html = config["community_html"]
+        self.featured_channels_html = config["featured_channels_html"]
+        self.videos_html = config["videos_html"]
+        self.videos = config["videos"]
+        self.total_videos = config["total_videos"]
 
-        self._is_local = isinstance(id, Path)
-        if self._is_local:
-            if not id.exists():
-                raise Exception("Channel directory not found: %s" % id)
-            if not Path(id, "info.json").exists():
-                raise Exception("Channel has no info.json file: %s" % id)
-            self.target_dir = id
-            self.channel_info = Path(self.target_dir, "info.json")
-            with self.channel_info.open("r") as f:
-                sav = json.load(f)
-                self.fetched_at = datetime.fromisoformat(sav["fetched_at"])
-                self.name = sav["name"]
-                self.formatted_name = sav["formatted_name"]
-                self.id = sav["id"]
-                self.about_html = sav["about_html"]
-                self.community_html = sav["community_html"]
-                self.featured_channels_html = sav["featured_channels_html"]
-                self.videos_html = sav["videos_html"]
-            paths = []
-            for title in self.target_dir.iterdir():
-                if title.is_dir():
-                    for stream in title.iterdir():
-                        info = [_ for _ in stream.glob("info.json")]
-                        if stream.is_dir() and len(info) > 0:
-                            paths.append(stream)
-            self.videos = VideoGenerator(paths)
-        else:
-            self.id = id
-            c = pytube.Channel("https://www.youtube.com/channel/%s" % self.id)
-            self.fetched_at = datetime.now()
-            self.name = c.channel_name
-            self.formatted_name = format_filename(self.name)
-            self.about_html = c.about_html
-            self.community_html = c.community_html
-            self.featured_channels_html = c.featured_channels_html
-            self.videos_html = c.html
+        self.target_dir = Path(ROOT_DIR, "Videos", self.formatted_name)
+        if write_info:
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            with Path(self.target_dir, "info.json").open("w") as outfile:
+                json.dump(self.flatten(), outfile)
 
-            # def get_target_dir():
-            #     # recursively search CHANNELS for relevant category(ies)
-            #     q = [([], CHANNELS)]
-            #     while q:
-            #         (keys, this_v) = q.pop()
-            #         if this_v == self.id:
-            #             return Path(ROOT_DIR, "Videos", *keys[:-1],
-            #                         self.formatted_name)
-            #         if isinstance(this_v, dict):
-            #             for (k, v) in this_v.items():
-            #                 q.append((keys + [k], v))
-            #     return Path(ROOT_DIR, "Videos", self.formatted_name)
+    @classmethod
+    def from_local(cls, path):
+        """Factory method. Returns a Channel object from the data cached
+        locally in the given path's info.json file.
 
-            self.target_dir = Path(ROOT_DIR, "Videos", "Politics",
-                                   self.formatted_name)
-            self.channel_info = Path(self.target_dir, "info.json")
-            urls = [url for url in tqdm(c.url_generator(), leave = False)]
-            self.videos = VideoGenerator(urls)
-            self.target_dir.mkdir(parents = True, exist_ok = True)
-            with self.channel_info.open("w") as f:
-                json.dump(self.flatten(), f)
+        Args:
+            path (Path-like): path to construct video from.  Should contain
+                an info.json file.
+
+        Raises:
+            ValueError: path does not exist or has no info.json file
+        """
+        if not path.exists():
+            raise ValueError(f"Channel directory not found: {path}")
+        if not Path(path, "info.json").exists():
+            raise ValueError(f"Channel has no info.json file: {path}")
+
+        video_paths = []
+        for title_dir in path.iterdir():
+            if title_dir.is_dir():
+                for stream_dir in title_dir.iterdir():
+                    info = [p for p in stream_dir.glob("info.json")]
+                    if stream_dir.is_dir() and len(info) > 0:
+                        video_paths.append(stream_dir)
+        video_generator = VideoGenerator(video_paths, local=True)
+
+        with Path(path, "info.json").open("r") as infile:
+            saved = json.load(infile)
+            config_dict = {
+                "fetched_at": datetime.fromisoformat(saved["fetched_at"]),
+                "name": saved["name"],
+                "formatted_name": saved["formatted_name"],
+                "id": saved["id"],
+                "about_html": saved["about_html"],
+                "community_html": saved["community_html"],
+                "featured_channels_html": saved["featured_channels_html"],
+                "videos_html": saved["videos_html"],
+                "videos": video_generator,
+                "total_videos": len(video_generator)
+            }
+        return cls(config_dict, write_info=False)
+
+    @classmethod
+    def from_pytube(cls, id):
+        """Factory method. Returns a Channel object from a pytube query.
+
+        Args:
+            id (str): id of channel. This usually fits the formula
+                'https://www.youtube.com/channel/{id}', but it can be found
+                easily with third party tools if it's not immediately obvious.
+        """
+        c = pytube.Channel(f"https://www.youtube.com/channel/{id}")
+        video_urls = [url for url in tqdm(c.url_generator(), leave=False)]
+        video_generator = VideoGenerator(video_urls, local=False)
+
+        config_dict = {
+            "_is_local": False,
+            "fetched_at": datetime.now(),
+            "name": c.channel_name,
+            "formatted_name": format_filename(c.channel_name),
+            "id": id,
+            "about_html": c.about_html,
+            "community_html": c.community_html,
+            "featured_channels_html": c.featured_channels_html,
+            "videos_html": c.html,
+            "videos": video_generator,
+            "total_videos": len(video_generator)
+        }
+        return cls(config_dict, write_info=True)
+
+    def download(self):
+        with ThreadPoolExecutor(max_workers=None) as exec:
+            try:
+                for video in self.videos:
+                    exec.submit(video.download)
+            except (KeyboardInterrupt, SystemExit):
+                exec.shutdown()
+                return
 
     def flatten(self):
+        """Returns a json serializable dictionary encapsulating the class"""
         flat = {
             "fetched_at" : self.fetched_at.isoformat(),
             "name" : self.name,
@@ -130,153 +162,197 @@ class Channel:
         }
         return flat
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_traceback):
+        return None
+
+    def __len__(self):
+        return self.total_videos
+
+    def __repr__(self):
+        return self.__str__()
+
+    def __str__(self):
+        return (
+            f"{self.name}\n"
+            f"{self.fetched_at}\n"
+            f"{self.total_videos}"
+        )
+
 
 class Video:
 
-    def __init__(self, id):
-        self._is_local = isinstance(id, Path)
+
+    def __init__(self, config):
         self._is_downloaded = None
 
-        if self._is_local:
-            if not id.exists() or not id.is_dir():
-                raise Exception("Directory does not exist: %s" % id)
-            if len([_ for _ in id.glob("info.json")]) == 0:
-                raise Exception("Directory has no info.json file: %s" % id)
-            self.stream_dir = id
-            self.target_dir = self.stream_dir.parent
-            with Path(self.stream_dir, "info.json").open("r") as f:
-                s = json.load(f)
-                self.url = s["url"]
-                self.video_id = s["id"]
-                self.fetched_at = datetime.fromisoformat(s["fetched_at"])
-                self.title = s["title"]
-                self.formatted_title = s["formatted_title"]
-                self.publish_date = datetime.fromisoformat(s["publish_date"])
-                self.length = timedelta(seconds = s["length"])
-                self.channel = s["channel"]
-                self.description = s["description"]
-                self.keywords = s["keywords"]
-                self.thumbnail_url = s["thumbnail_url"]
-                self.views = s["views"]
-                self.rating = s["rating"]
-        else:
-            pytube_video = pytube.YouTube(id)
-            self.url = id
-            self.video_id = re.split("v=", self.url)[-1]
-            self.fetched_at = datetime.now()
-            self.title = pytube_video.title
-            self.formatted_title = format_filename(self.title)
-            self.publish_date = pytube_video.publish_date
-            self.length = timedelta(seconds = pytube_video.length)
-            self.channel = {
-                "name" : pytube_video.author,
-                "formatted_name" : format_filename(pytube_video.author),
-                "id" : pytube_video.channel_id,
-                "url" : pytube_video.channel_url
+        self.fetched_at = config["fetched_at"]
+        self.url = config["url"]
+        self.id = config["id"]
+        self.title = config["title"]
+        self.formatted_title = config["formatted_title"]
+        self.publish_date = config["publish_date"]
+        self.length = config["length"]
+        self.channel = config["channel"]
+        self.description = config["description"]
+        self.keywords = config["keywords"]
+        self.thumbnail_url = config["thumbnail_url"]
+        self.views = config["views"]
+        self.rating = config["rating"]
+        self.captions = config["captions"]
+        self.streams = config["streams"]
+
+        slug = f"[{self.publish_date.date()}] {self.formatted_title}"
+        self.target_dir = Path(ROOT_DIR, "Videos",
+                               self.channel["formatted_name"], slug, self.id)
+
+    @classmethod
+    def from_local(cls, path):
+        if not path.exists() or not path.is_dir():
+            raise Exception(f"Directory does not exist: {path}")
+        if not Path(path, "info.json").exists():
+            raise Exception(f"Directory has no info.json file: {path}")
+
+        with Path(path, "info.json").open("r") as infile:
+            saved = json.load(infile)
+            config_dict = {
+                "fetched_at": datetime.fromisoformat(saved["fetched_at"]),
+                "url": saved["url"],
+                "id": saved["id"],
+                "title": saved["title"],
+                "formatted_title": saved["formatted_title"],
+                "publish_date": datetime.fromisoformat(saved["publish_date"]),
+                "length": timedelta(seconds=saved["length"]),
+                "channel": {
+                    "name" : saved["channel"]["name"],
+                    "formatted_name": saved["channel"]["formatted_name"],
+                    "id": saved["channel"]["id"],
+                    "url": saved["channel"]["url"]
+                },
+                "description": saved["description"],
+                "keywords": saved["keywords"],
+                "thumbnail_url": saved["thumbnail_url"],
+                "views": saved["views"],
+                "rating": saved["rating"],
+                "captions": None,
+                "streams": None
             }
-            self.description = pytube_video.description
-            self.keywords = pytube_video.keywords
-            self.thumbnail_url = pytube_video.thumbnail_url
-            self.views = pytube_video.views
-            self.rating = pytube_video.rating
+        return cls(config_dict)
 
-            # pytube objects
-            self.captions = pytube_video.captions
-            self.streams = pytube_video.streams
-
-            # def get_target_dir():
-            #     # recursively search CHANNELS for relevant category(ies)
-            #     slug = "[%s] %s" % (self.publish_date.date(),
-            #                         self.formatted_title)
-            #     q = [([], CHANNELS)]
-            #     while q:
-            #         (keys, this_v) = q.pop()
-            #         if this_v == self.channel["id"]:
-            #             return Path(ROOT_DIR, "Videos", *keys[:-1],
-            #                         self.channel["formatted_name"], slug)
-            #         if isinstance(this_v, dict):
-            #             for (k, v) in this_v.items():
-            #                 q.append((keys + [k], v))
-            #     return Path(ROOT_DIR, "Videos",
-            #                 self.channel["formatted_name"], slug)
-
-            slug = "[%s] %s" % (self.publish_date.date(), self.formatted_title)
-            self.target_dir = Path(ROOT_DIR, "Videos", "Politics",
-                                   self.channel["formatted_name"], slug)
-            self.stream_dir = Path(self.target_dir, self.video_id)
-
-        self.info_path = Path(self.stream_dir, "info.json")
-        self.stats_path = Path(self.stream_dir, "stats.csv")
-        self.video_path = Path(self.stream_dir, "video.mp4")
-        self.audio_path = Path(self.stream_dir, "audio.mp4")
-        self.combined_path = Path(self.stream_dir, "combined.mp4")
-        self.captions_path = Path(self.target_dir, "captions.srt")
+    @classmethod
+    def from_pytube(cls, url):
+        v = pytube.YouTube(url)
+        config_dict = {
+            "fetched_at": datetime.now(),
+            "url": url,
+            "id": re.split("v=", url)[-1],
+            "title": v.title,
+            "formatted_title": format_filename(v.title),
+            "publish_date": v.publish_date,
+            "length": timedelta(seconds=v.length),
+            "channel": {
+                "name": v.author,
+                "formatted_name": format_filename(v.author),
+                "id": v.channel_id,
+                "url": v.channel_url
+            },
+            "description": v.description,
+            "keywords": v.keywords,
+            "thumbnail_url": v.thumbnail_url,
+            "views": v.views,
+            "rating": v.rating,
+            "captions": v.captions,
+            "streams": v.streams
+        }
+        return cls(config_dict)
 
     def convert(self):
+        """Merges audio and video into a single file via ffmpeg encoding."""
+        audio_path = Path(self.target_dir, "audio.mp4")
+        video_path = Path(self.target_dir, "video.mp4")
+        combined_path = Path(self.target_dir, "combined.mp4")
         if not self.is_converted():
             if not self.is_downloaded():
-                raise Exception("Cannot convert: Video not or only partially \
-                                 downloaded (%s)" % self.target_dir)
-            self.combined_path.unlink(missing_ok=True)
-            video = ffmpeg.input(self.video_path)
-            audio = ffmpeg.input(self.audio_path)
-            out = ffmpeg.output(video, audio, self.combined_path)
+                raise RuntimeError((f"Cannot convert video: download "
+                                    f"incomplete ({self.target_dir})"))
+            combined_path.unlink(missing_ok=True)
+            video = ffmpeg.input(video_path)
+            audio = ffmpeg.input(audio_path)
+            out = ffmpeg.output(video, audio, combined_path)
             out.run()
-            self.video_path.unlink()
-            self.audio_path.unlink()
+            video_path.unlink()
+            audio_path.unlink()
             return True
         return False
 
-    def download(self, dry_run = False, verbose = True):
-        if self._is_local:
-            raise Exception("Can't download a local video")
+    def download(self, dry_run=False, verbose=True):
+        """Downloads the highest quality audio/video streams to local storage
+
+        Args:
+            dry_run (bool): Perform full download?
+            verbose (bool): Print video information to console?
+
+        Raises:
+            AttributeError: video is local (no data to download)
+        """
+        if self.streams is None:
+            raise RuntimeError(("No valid streams to download. "
+                                "Check if video is online or local"))
         if verbose:
-            print("[%s] %s" % (self.publish_date.date(), self.formatted_title))
+            print(f"[{self.publish_date.date()}] {self.formatted_title}")
+
+        self.target_dir.mkdir(parents=True, exist_ok=True)
+        info_path = Path(self.target_dir, "info.json")
+        stats_path = Path(self.target_dir, "stats.csv")
+        audio_path = Path(self.target_dir, "audio.mp4")
+        video_path = Path(self.target_dir, "video.mp4")
+        captions_path = Path(self.target_dir, "captions.srt")
 
         # save video metadata
-        self.stream_dir.mkdir(parents = True, exist_ok = True)
-        with self.info_path.open(mode = 'w') as outfile:
+        with Path(self.target_dir, "info.json").open(mode="w") as outfile:
             json.dump(self.flatten(), outfile)
 
         # save view statistics
         row = {
-            "timestamp" : self.fetched_at.isoformat(),
-            "views" : self.views,
-            "rating" : self.rating
+            "timestamp": self.fetched_at.isoformat(),
+            "views": self.views,
+            "rating": self.rating
         }
-        if not self.stats_path.exists():
-            with self.stats_path.open(mode = 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames = list(row.keys()))
+        if not stats_path.exists():
+            with stats_path.open(mode="w") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=list(row.keys()))
                 writer.writeheader()
                 writer.writerow(row)
         else:
-            with self.stats_path.open(mode = 'a') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames = list(row.keys()))
+            with stats_path.open(mode="a") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=list(row.keys()))
                 writer.writerow(row)
 
         # download video
         if not self.is_downloaded() and not dry_run:
-            self.streams.filter(adaptive = True, mime_type = 'video/mp4') \
-                        .order_by('resolution') \
+            self.streams.filter(adaptive=True, mime_type="video/mp4") \
+                        .order_by("resolution") \
                         .desc() \
                         .first() \
-                        .download(output_path = self.target_dir,
-                                  filename = self.video_path.stem)
-            self.streams.filter(adaptive = True, mime_type = 'audio/mp4') \
-                        .order_by('abr') \
+                        .download(output_path=video_path.parent,
+                                  filename=video_path.name)
+            self.streams.filter(adaptive=True, mime_type="audio/mp4") \
+                        .order_by("abr") \
                         .desc() \
                         .first() \
-                        .download(output_path = self.target_dir,
-                                  filename = self.audio_path.stem)
+                        .download(output_path=audio_path.parent,
+                                  filename=audio_path.name)
             if "en" in self.captions.keys():
-                self.captions["en"].download(output_path = self.target_dir,
-                                   title = self.captions_path.stem,
-                                   srt=True)
+                self.captions["en"].download(output_path=captions_path.parent,
+                                             title=captions_path.name,
+                                             srt=True)
 
     def flatten(self):
         flat = {
             "url" : self.url,
-            "id" : self.video_id,
+            "id" : self.id,
             "fetched_at" : self.fetched_at.isoformat(),
             "title" : self.title,
             "formatted_title" : self.formatted_title,
@@ -291,7 +367,7 @@ class Video:
         }
         return flat
 
-    def is_converted(self, tolerance = 3):
+    def is_converted(self, tolerance=3):
         def validate(path):
             if not path.exists():
                 return False
@@ -299,9 +375,9 @@ class Video:
             dur2 = self.length.total_seconds()
             return abs(dur1 - dur2) < tolerance
 
-        return validate(self.combined_path)
+        return validate(Path(self.target_dir, "combined.mp4"))
 
-    def is_downloaded(self, tolerance = 3):
+    def is_downloaded(self, tolerance=3):
         def validate(path):
             if not path.exists():
                 return False
@@ -309,42 +385,69 @@ class Video:
             dur2 = self.length.total_seconds()
             return abs(dur1 - dur2) <= tolerance
 
+        audio_path = Path(self.target_dir, "audio.mp4")
+        video_path = Path(self.target_dir, "video.mp4")
+        combined_path = Path(self.target_dir, "combined.mp4")
         if self._is_downloaded is not None:
             return self._is_downloaded
-        cond1 = validate(self.combined_path)
-        cond2 = validate(self.video_path) and validate(self.audio_path)
+        cond1 = validate(combined_path)
+        cond2 = validate(video_path) and validate(audio_path)
         self._is_downloaded = cond1 or cond2
         return self._is_downloaded
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_traceback):
+        return None
+
+    def __len__(self):
+        """Returns duration of video in seconds"""
+        return self.length.total_seconds()
+
+    def __repr__(self):
+        return self.__str__()
+
     def __str__(self):
-        return "[%s] %s: %s" % (self.publish_date.date(),
-                                self.channel["name"],
-                                self.title)
+        return (
+            f"[{self.publish_date.date()}] "
+            f"{self.channel['name']}: "
+            f"{self.title}"
+        )
 
 
 class VideoGenerator:
 
-    def __init__(self, ids):
-        self.ids = ids
-        self.length = len(self.ids)
+    def __init__(self, objs, local=False):
+        self.objs = objs
+        self.length = len(self.objs)
+        self.local = local
 
     def __iter__(self):
-        for id in self.ids:
+        for obj in self.objs:
             try:
-                yield Video(id)
-            except pytube.exceptions.VideoUnavailable:
+                if self.local:
+                    yield Video.from_local(obj)
+                else:
+                    yield Video.from_pytube(obj)
+            except (pytube.exceptions.VideoUnavailable, URLError, gaierror):
                 continue
 
     def __len__(self):
         return self.length
 
 
+
 if __name__ == "__main__":
 
-    test_channel_id = Path(ROOT_DIR, "Videos", "Politics", "Tim Pool")
-    c = Channel(test_channel_id)
-    for v in tqdm(c.videos, leave = False):
-        print(v.title)
+    test_id = "UCzJXNzqz6VMHSNInQt_7q6w"
+    with Channel.from_pytube(test_id) as c2:
+        c2.download()
 
-    for c in get_local_channels():
-        print(c.name)
+    # test_channel_id = "UCG749Dj4V2fKa143f8sE60Q"
+    # c = Channel(test_channel_id)
+    # for v in tqdm(c.videos, leave=False):
+    #     v.download(dry_run=True)
+
+    # for c in get_local_channels():
+    #     print(c.name)
